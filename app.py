@@ -1,11 +1,11 @@
-# Updated version of app.py with all requested enhancements
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import re
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import numpy as np
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,8 +24,9 @@ app.add_middleware(
 class Split(BaseModel):
     label: Optional[str]
     pace: Optional[str]
-
-
+    km: Optional[str]
+    split: Optional[int]
+    time: Optional[str]
 
 class Workout(BaseModel):
     avg_hr: Optional[int] = None
@@ -47,6 +48,9 @@ class Workout(BaseModel):
     temperature: Optional[float] = None
     humidity: Optional[float] = None
     wind_speed: Optional[float] = None
+    splits: Optional[List[Dict[str, Any]]] = None
+    time: Optional[str] = None  # total duration in "HH:MM:SS" format
+    workout_date: Optional[str] = None
 
 class CompareRequest(BaseModel):
     workout_a: Workout
@@ -54,7 +58,7 @@ class CompareRequest(BaseModel):
 
 # ---------- Utilities ----------
 def pace_in_seconds(pace_str: str) -> int:
-    if not pace_str:
+    if not pace_str or pace_str == "-- /km":
         return 0
     try:
         pace_str = pace_str.replace(':', "'").replace('"', '').strip()
@@ -69,36 +73,72 @@ def _pace_in_minutes(pace_str: str) -> float:
     seconds = pace_in_seconds(pace_str)
     return seconds / 60 if seconds else 0.0
 
+def time_in_seconds(time_str: str) -> int:
+    """Convert time string (HH:MM:SS or MM:SS) to seconds"""
+    if not time_str:
+        return 0
+    try:
+        parts = list(map(int, time_str.split(':')))
+        if len(parts) == 3:  # HH:MM:SS
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        elif len(parts) == 2:  # MM:SS
+            return parts[0] * 60 + parts[1]
+        elif len(parts) == 1:  # SS
+            return parts[0]
+    except:
+        pass
+    return 0
 
-
-def detect_session_type(splits):
+def detect_session_type(splits) -> str:
+    if not splits:
+        return "continuous"
+    
     has_rest = any(
         split.get("label", "").lower() == "rest" or 
-        _pace_in_minutes(split.get("pace")) > 10
+        (split.get("pace") and _pace_in_minutes(split.get("pace")) > 10)
         for split in splits
     )
-    if has_rest:
-        return "intervals"
-    else:
-        return "continuous"
+    return "intervals" if has_rest else "continuous"
 
-
-def classify_workout(workout):
-    splits = getattr(workout, "splits", []) or []
+def classify_workout(workout: Workout) -> str:
+    splits = workout.splits or []
     avg_hr = workout.avg_hr or 0
     distance = workout.distance or 0
     pace = _pace_in_minutes(workout.pace)
     structure = detect_session_type(splits)
+    duration = time_in_seconds(workout.time) if workout.time else 0
 
     if structure == "intervals":
-        return "interval session"
-    if 4.5 <= distance <= 5.5 and avg_hr > 180:
-        return "race effort"
-    if pace < 4.0:
+        # Further classify interval type
+        interval_distances = []
+        for split in splits:
+            if split.get("label", "").lower() in ["run", "lap"]:
+                km_str = split.get("km", "0 km")
+                km = float(km_str.split()[0])
+                interval_distances.append(km)
+        
+        avg_interval_distance = np.mean(interval_distances) if interval_distances else 0
+        
+        if avg_interval_distance <= 0.5:
+            return "short intervals (200-400m)"
+        elif avg_interval_distance <= 1.0:
+            return "mid-length intervals (800-1000m)"
+        else:
+            return "long intervals (mile+)"
+    
+    # Continuous runs
+    if distance <= 5 and avg_hr > 180 and pace < 4.0:
+        return "5K race or time trial"
+    elif distance > 10 and avg_hr < 150:
+        return "long easy run"
+    elif 5 < distance <= 10 and 150 <= avg_hr <= 170:
         return "tempo run"
-    if pace > 5.5 and avg_hr < 140:
-        return "recovery run"
-    return "general aerobic run"
+    elif distance > 21 and distance <= 42 and avg_hr < 150:
+        return "marathon pace run"
+    elif distance > 15 and 140 <= avg_hr <= 160:
+        return "steady state run"
+    else:
+        return "general aerobic run"
 
 # ---------- Insight Engine ----------
 class InsightEngine:
@@ -107,150 +147,505 @@ class InsightEngine:
         self.b = b
         self.pace_diff_sec = pace_diff_sec
         self.insights = {
-            "intensity": [], "efficiency": [], "strength": [], "form": [], "training_type": [], "context": []
+            "intensity": [], 
+            "efficiency": [], 
+            "strength": [], 
+            "form": [], 
+            "training_type": [], 
+            "context": [],
+            "physiological": [],
+            "performance": []
         }
         self.key_takeaways = []
         self.recommendations = []
         self.risk_flags = []
         self.performance_trend = {}
+        self.comparison_metrics = {}
 
     def analyze(self):
+        self._workout_classification()
+        self._relative_intensity()
         self._heart_rate()
-        self._pace()
+        self._pace_analysis()
         self._cadence()
         self._elevation()
         self._effort()
         self._power()
         self._stride()
         self._quality()
-        self._distance()
+        self._distance_duration()
         self._environment_context()
+        self._efficiency_metrics()
+        self._training_load()
         self._build_takeaways()
         self._generate_recommendations()
         self._evaluate_risks()
         self._evaluate_trends()
         return self._export()
 
-    def _environment_context(self):
-        humidity_b = self.b.get("humidity")
-        temperature_b = self.b.get("temperature")
-        wind_b = self.b.get("wind_speed")
+    def _workout_classification(self):
+        a_type = classify_workout(Workout(**self.a))
+        b_type = classify_workout(Workout(**self.b))
+        
+        self.insights["training_type"].append(f"Workout A: {a_type}")
+        self.insights["training_type"].append(f"Workout B: {b_type}")
+        
+        if a_type != b_type:
+            self.insights["context"].append(
+                f"Comparing different workout types: {a_type} vs {b_type}. "
+                "Consider that each serves different training purposes."
+            )
 
-        if humidity_b is not None and humidity_b > 75:
-            self.insights["efficiency"].append("High humidity in Workout B may have impaired performance.")
-
-        if temperature_b is not None and temperature_b > 28:
-            self.insights["efficiency"].append("Elevated temperature in Workout B could lead to higher HR and effort.")
-
-        if wind_b is not None and wind_b > 15:
-            self.insights["efficiency"].append("Strong wind in Workout B may have affected pacing or form.")
-
+    def _relative_intensity(self):
+        a_duration = time_in_seconds(self.a.get("time", "0:00"))
+        b_duration = time_in_seconds(self.b.get("time", "0:00"))
+        
+        # Calculate intensity score (simple version)
+        a_intensity = (self.a.get("avg_hr", 0) or 0) * (a_duration / 3600)  # HR * hours
+        b_intensity = (self.b.get("avg_hr", 0) or 0) * (b_duration / 3600)
+        
+        self.comparison_metrics["intensity_score"] = {
+            "a": round(a_intensity, 1),
+            "b": round(b_intensity, 1),
+            "difference": round(a_intensity - b_intensity, 1)
+        }
+        
+        if a_intensity > b_intensity * 1.2:
+            self.insights["intensity"].append(
+                "Workout A was significantly more demanding in overall training load"
+            )
+        elif b_intensity > a_intensity * 1.2:
+            self.insights["intensity"].append(
+                "Workout B was significantly more demanding in overall training load"
+            )
 
     def _heart_rate(self):
-        if self.a["avg_hr"] and self.b["avg_hr"]:
+        avg_hr_diff = (self.a.get("avg_hr", 0) or 0) - (self.b.get("avg_hr", 0) or 0)
+        max_hr_diff = (self.a.get("max_hr", 0) or 0) - (self.b.get("max_hr", 0) or 0)
+        
+        self.comparison_metrics["heart_rate"] = {
+            "avg_hr_diff": avg_hr_diff,
+            "max_hr_diff": max_hr_diff
+        }
+        
+        if self.a.get("avg_hr") and self.b.get("avg_hr"):
             if self.a["avg_hr"] < self.b["avg_hr"]:
-                self.insights["intensity"].append("Workout A had lower average heart rate, showing better aerobic efficiency or reduced strain.")
-            elif self.a["avg_hr"] > self.b["avg_hr"]:
-                self.insights["intensity"].append("Workout B had lower average heart rate, possibly indicating easier intensity or aerobic gains.")
+                hr_percent_diff = ((self.b["avg_hr"] - self.a["avg_hr"]) / self.a["avg_hr"]) * 100
+                self.insights["physiological"].append(
+                    f"Workout B had {abs(hr_percent_diff):.1f}% higher average HR ({self.b['avg_hr']} vs {self.a['avg_hr']}), "
+                    "indicating significantly higher cardiovascular stress"
+                )
             else:
-                self.insights["intensity"].append("Average heart rates were similar, indicating matched effort levels.")
+                hr_percent_diff = ((self.a["avg_hr"] - self.b["avg_hr"]) / self.b["avg_hr"]) * 100
+                self.insights["physiological"].append(
+                    f"Workout A had {hr_percent_diff:.1f}% higher average HR ({self.a['avg_hr']} vs {self.b['avg_hr']})"
+                )
 
-        if self.a["max_hr"] and self.b["max_hr"]:
+        if self.a.get("max_hr") and self.b.get("max_hr"):
             if self.a["max_hr"] < self.b["max_hr"]:
-                self.insights["intensity"].append("Workout A peaked at a lower max heart rate, possibly due to controlled pacing.")
+                self.insights["intensity"].append(
+                    f"Workout B reached higher max HR ({self.b['max_hr']} vs {self.a['max_hr']}), "
+                    "suggesting more maximal effort"
+                )
             elif self.a["max_hr"] > self.b["max_hr"]:
-                self.insights["intensity"].append("Workout B peaked at a lower max heart rate, reflecting lower maximum effort.")
-            else:
-                self.insights["intensity"].append("Both workouts reached similar peak heart rates.")
+                self.insights["intensity"].append(
+                    f"Workout A reached higher max HR ({self.a['max_hr']} vs {self.b['max_hr']})"
+                )
 
-    def _pace(self):
+    def _pace_analysis(self):
+        a_splits = self.a.get("splits", [])
+        b_splits = self.b.get("splits", [])
+        
+        # Basic pace comparison
         if self.pace_diff_sec < 0:
-            self.insights["efficiency"].append(f"Workout B was faster by {-self.pace_diff_sec} sec/km — a sign of improved pace or intensity.")
+            self.insights["performance"].append(
+                f"Workout B was faster by {-self.pace_diff_sec} sec/km — "
+                "consider workout types when interpreting this difference"
+            )
         elif self.pace_diff_sec > 0:
-            self.insights["efficiency"].append(f"Workout A was faster by {self.pace_diff_sec} sec/km — good speed potential.")
-        else:
-            self.insights["efficiency"].append("Both workouts had identical paces.")
+            self.insights["performance"].append(
+                f"Workout A was faster by {self.pace_diff_sec} sec/km"
+            )
+        
+        # Analyze pace consistency from splits
+        if a_splits and b_splits:
+            a_run_paces = [pace_in_seconds(split["pace"]) for split in a_splits 
+                          if split.get("label", "").lower() in ["run", "lap"] and split.get("pace")]
+            b_run_paces = [pace_in_seconds(split["pace"]) for split in b_splits 
+                          if split.get("label", "").lower() in ["run", "lap"] and split.get("pace")]
+            
+            if a_run_paces and b_run_paces:
+                a_pace_std = np.std(a_run_paces)
+                b_pace_std = np.std(b_run_paces)
+                
+                self.comparison_metrics["pace_consistency"] = {
+                    "a_std": round(a_pace_std, 1),
+                    "b_std": round(b_pace_std, 1)
+                }
+                
+                if a_pace_std > b_pace_std * 2:
+                    self.insights["performance"].append(
+                        "Workout A had more variable pacing (typical for interval sessions)"
+                    )
+                elif b_pace_std > a_pace_std * 2:
+                    self.insights["performance"].append(
+                        "Workout B had more variable pacing"
+                    )
+                
+                # Detect negative/positive splits
+                if len(a_run_paces) >= 3:
+                    first_half = np.mean(a_run_paces[:len(a_run_paces)//2])
+                    second_half = np.mean(a_run_paces[len(a_run_paces)//2:])
+                    if second_half < first_half * 0.95:  # 5% faster
+                        self.insights["performance"].append(
+                            "Workout A showed negative splits (faster as it progressed)"
+                        )
+                
+                if len(b_run_paces) >= 3:
+                    first_half = np.mean(b_run_paces[:len(b_run_paces)//2])
+                    second_half = np.mean(b_run_paces[len(b_run_paces)//2:])
+                    if second_half < first_half * 0.95:  # 5% faster
+                        self.insights["performance"].append(
+                            "Workout B showed negative splits (faster as it progressed)"
+                        )
 
     def _cadence(self):
         diff = (self.a.get("cadence_avg", 0) or 0) - (self.b.get("cadence_avg", 0) or 0)
+        
+        self.comparison_metrics["cadence"] = {
+            "a_avg": self.a.get("cadence_avg"),
+            "b_avg": self.b.get("cadence_avg"),
+            "difference": diff
+        }
+        
         if abs(diff) <= 5:
-            self.insights["form"].append("Cadence was stable, suggesting consistent form.")
+            self.insights["form"].append(
+                "Cadence was stable between workouts, suggesting consistent form"
+            )
         elif diff > 5:
-            self.insights["form"].append("Workout A had higher cadence, indicating quicker turnover and possibly improved running economy.")
+            self.insights["form"].append(
+                f"Workout A had higher cadence (+{diff} spm), indicating quicker turnover"
+            )
+            if self.a.get("stride_length_avg") and self.b.get("stride_length_avg"):
+                if self.a["stride_length_avg"] > self.b["stride_length_avg"]:
+                    self.insights["form"].append(
+                        "Despite higher cadence, Workout A also had longer stride length - "
+                        "this combination suggests powerful running form"
+                    )
         else:
-            self.insights["form"].append("Workout B had higher cadence, pointing to efficient stride mechanics.")
+            self.insights["form"].append(
+                f"Workout B had higher cadence ({abs(diff)} spm more than Workout A)"
+            )
 
     def _elevation(self):
-        diff = (self.a.get("elevation_gain", 0) or 0) - (self.b.get("elevation_gain", 0) or 0)
-        if diff > 10:
-            self.insights["strength"].append("Workout A involved more elevation, suggesting muscular strength or hill work.")
-        elif diff < -10:
-            self.insights["strength"].append("Workout B had more elevation gain, challenging strength and stamina.")
-        else:
-            self.insights["strength"].append("Elevation gain was similar — terrain likely comparable.")
+        gain_diff = (self.a.get("elevation_gain", 0) or 0) - (self.b.get("elevation_gain", 0) or 0)
+        avg_diff = (self.a.get("elevation_avg", 0) or 0) - (self.b.get("elevation_avg", 0) or 0)
+        
+        self.comparison_metrics["elevation"] = {
+            "gain_diff": gain_diff,
+            "avg_diff": avg_diff
+        }
+        
+        if gain_diff > 10:
+            self.insights["strength"].append(
+                f"Workout A had {gain_diff}m more elevation gain, "
+                "suggesting greater muscular strength demand"
+            )
+        elif gain_diff < -10:
+            self.insights["strength"].append(
+                f"Workout B had {abs(gain_diff)}m more elevation gain"
+            )
+        
+        if abs(avg_diff) > 20:
+            self.insights["context"].append(
+                f"Significant elevation difference: Workout A at {self.a.get('elevation_avg')}m avg vs "
+                f"Workout B at {self.b.get('elevation_avg')}m avg"
+            )
 
     def _effort(self):
-        diff = (self.a.get("effort_score", 0) or 0) - (self.b.get("effort_score", 0) or 0)
-        if diff > 0:
-            self.insights["intensity"].append("Workout A had a higher effort score, likely a more demanding session.")
-        elif diff < 0:
-            self.insights["intensity"].append("Workout B had a higher effort score, possibly from greater distance or effort.")
-        else:
-            self.insights["intensity"].append("Effort scores were the same — sessions were similarly taxing.")
+        a_score = self.a.get("effort_score", 0) or 0
+        b_score = self.b.get("effort_score", 0) or 0
+        diff = a_score - b_score
+        
+        if a_score and b_score:
+            if diff > 0:
+                self.insights["intensity"].append(
+                    f"Workout A had higher effort score ({a_score} vs {b_score})"
+                )
+            elif diff < 0:
+                self.insights["intensity"].append(
+                    f"Workout B had higher effort score ({b_score} vs {a_score})"
+                )
 
     def _power(self):
-        diff = (self.a.get("running_power_avg", 0) or 0) - (self.b.get("running_power_avg", 0) or 0)
-        if diff > 10:
-            self.insights["efficiency"].append("Workout A showed greater average running power — an indicator of better output.")
-        elif diff < -10:
-            self.insights["efficiency"].append("Workout B had more average running power, pointing to stronger force or pace.")
-        else:
-            self.insights["efficiency"].append("Running power was stable across both workouts.")
+        avg_diff = (self.a.get("running_power_avg", 0) or 0) - (self.b.get("running_power_avg", 0) or 0)
+        max_diff = (self.a.get("running_power_max", 0) or 0) - (self.b.get("running_power_max", 0) or 0)
+        
+        self.comparison_metrics["power"] = {
+            "avg_diff": avg_diff,
+            "max_diff": max_diff
+        }
+        
+        if abs(avg_diff) > 10:
+            if avg_diff > 0:
+                self.insights["performance"].append(
+                    f"Workout A had higher average running power (+{avg_diff}W)"
+                )
+            else:
+                self.insights["performance"].append(
+                    f"Workout B had higher average running power ({abs(avg_diff)}W more)"
+                )
+        
+        if abs(max_diff) > 20:
+            if max_diff > 0:
+                self.insights["performance"].append(
+                    f"Workout A reached higher peak power (+{max_diff}W)"
+                )
+            else:
+                self.insights["performance"].append(
+                    f"Workout B reached higher peak power ({abs(max_diff)}W more)"
+                )
 
     def _stride(self):
         diff = (self.a.get("stride_length_avg", 0) or 0) - (self.b.get("stride_length_avg", 0) or 0)
-        if diff > 5:
-            self.insights["form"].append("Workout A had a longer stride length, which could boost speed but monitor for overstriding.")
-        elif diff < -5:
-            self.insights["form"].append("Workout B had longer strides, potentially improving efficiency.")
-        else:
-            self.insights["form"].append("Stride lengths were consistent.")
+        
+        if abs(diff) > 5:
+            if diff > 0:
+                self.insights["form"].append(
+                    f"Workout A had longer stride length (+{diff}cm), "
+                    "which could indicate more powerful push-off"
+                )
+            else:
+                self.insights["form"].append(
+                    f"Workout B had longer stride length ({abs(diff)}cm more)"
+                )
+        
+        # Stride length to height ratio (approximate)
+        if self.a.get("stride_length_avg") and self.b.get("stride_length_avg"):
+            a_ratio = (self.a["stride_length_avg"] / 100) / 1.7  # Assuming ~1.7m height
+            b_ratio = (self.b["stride_length_avg"] / 100) / 1.7
+            if a_ratio > 1.0 or b_ratio > 1.0:
+                self.insights["form"].append(
+                    "One or both workouts showed stride lengths exceeding body height, "
+                    "which may indicate overstriding"
+                )
 
     def _quality(self):
-        self.insights["training_type"].append(f"Workout A was classified as {classify_workout(Workout(**self.a))} session.")
-        self.insights["training_type"].append(f"Workout B was classified as {classify_workout(Workout(**self.b))} session.")
+        if self.a.get("is_quality_session") and self.b.get("is_quality_session"):
+            if self.a["is_quality_session"] and not self.b["is_quality_session"]:
+                self.insights["training_type"].append(
+                    "Workout A was marked as a quality session while Workout B was not"
+                )
+            elif not self.a["is_quality_session"] and self.b["is_quality_session"]:
+                self.insights["training_type"].append(
+                    "Workout B was marked as a quality session while Workout A was not"
+                )
 
+    def _distance_duration(self):
+        dist_diff = (self.a.get("distance", 0) or 0) - (self.b.get("distance", 0) or 0)
+        a_duration = time_in_seconds(self.a.get("time", "0:00"))
+        b_duration = time_in_seconds(self.b.get("time", "0:00"))
+        duration_diff = a_duration - b_duration
+        
+        self.comparison_metrics["distance_duration"] = {
+            "distance_diff": dist_diff,
+            "duration_diff": duration_diff
+        }
+        
+        if dist_diff > 0:
+            self.insights["strength"].append(
+                f"Workout A covered {dist_diff:.2f}km more distance"
+            )
+        elif dist_diff < 0:
+            self.insights["strength"].append(
+                f"Workout B covered {abs(dist_diff):.2f}km more distance"
+            )
+        
+        if duration_diff > 0:
+            hours, remainder = divmod(abs(duration_diff), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.insights["context"].append(
+                f"Workout A was {hours}h {minutes}m {seconds}s longer in duration"
+            )
+        elif duration_diff < 0:
+            hours, remainder = divmod(abs(duration_diff), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.insights["context"].append(
+                f"Workout B was {hours}h {minutes}m {seconds}s longer in duration"
+            )
 
-    def _distance(self):
-        if self.a["distance"] > self.b["distance"]:
-            self.insights["strength"].append("Workout A covered more distance, showing endurance capability.")
-        elif self.a["distance"] < self.b["distance"]:
-            self.insights["strength"].append("Workout B covered more distance, reflecting longer aerobic work.")
-        else:
-            self.insights["strength"].append("Distances were equal.")
+    def _environment_context(self):
+        humidity_a = self.a.get("humidity")
+        temperature_a = self.a.get("temperature")
+        wind_a = self.a.get("wind_speed")
+        
+        humidity_b = self.b.get("humidity")
+        temperature_b = self.b.get("temperature")
+        wind_b = self.b.get("wind_speed")
+        
+        env_notes = []
+        
+        if humidity_b is not None and humidity_b > 75:
+            env_notes.append("high humidity")
+        if temperature_b is not None and temperature_b > 28:
+            env_notes.append("elevated temperature")
+        if wind_b is not None and wind_b > 15:
+            env_notes.append("strong wind")
+        
+        if env_notes:
+            self.insights["context"].append(
+                f"Workout B had challenging conditions: {', '.join(env_notes)}"
+            )
+
+    def _efficiency_metrics(self):
+        """Calculate combined efficiency metrics"""
+        # Running Efficiency Index (simplified)
+        if self.a.get("running_power_avg") and self.a.get("pace"):
+            a_pace_sec = pace_in_seconds(self.a["pace"])
+            a_efficiency = (self.a["running_power_avg"] / a_pace_sec) if a_pace_sec else 0
+        
+        if self.b.get("running_power_avg") and self.b.get("pace"):
+            b_pace_sec = pace_in_seconds(self.b["pace"])
+            b_efficiency = (self.b["running_power_avg"] / b_pace_sec) if b_pace_sec else 0
+        
+        if a_efficiency and b_efficiency:
+            self.comparison_metrics["efficiency_index"] = {
+                "a": round(a_efficiency, 2),
+                "b": round(b_efficiency, 2),
+                "difference": round(a_efficiency - b_efficiency, 2)
+            }
+            
+            if a_efficiency > b_efficiency * 1.1:
+                self.insights["efficiency"].append(
+                    f"Workout A showed {((a_efficiency - b_efficiency)/b_efficiency)*100:.1f}% better running efficiency "
+                    "(more speed per watt of power)"
+                )
+            elif b_efficiency > a_efficiency * 1.1:
+                self.insights["efficiency"].append(
+                    f"Workout B showed {((b_efficiency - a_efficiency)/a_efficiency)*100:.1f}% better running efficiency"
+                )
+
+    def _training_load(self):
+        """Estimate training load using TRIMP method"""
+        a_duration = time_in_seconds(self.a.get("time", "0:00")) / 3600  # hours
+        b_duration = time_in_seconds(self.b.get("time", "0:00")) / 3600
+        
+        # Simple TRIMP calculation: duration * avg_hr
+        a_trimp = a_duration * (self.a.get("avg_hr", 0) or 0)
+        b_trimp = b_duration * (self.b.get("avg_hr", 0) or 0)
+        
+        self.comparison_metrics["training_load"] = {
+            "a": round(a_trimp, 1),
+            "b": round(b_trimp, 1),
+            "difference": round(a_trimp - b_trimp, 1),
+            "percent_change": ((a_trimp - b_trimp) / b_trimp) * 100 if b_trimp else 0
+        }
+        
+        if a_trimp > b_trimp * 1.5:
+            self.insights["physiological"].append(
+                f"Workout A had {((a_trimp - b_trimp)/b_trimp)*100:.1f}% greater training load "
+                "(combination of duration and intensity)"
+            )
+        elif b_trimp > a_trimp * 1.5:
+            self.insights["physiological"].append(
+                f"Workout B had {((b_trimp - a_trimp)/a_trimp)*100:.1f}% greater training load"
+            )
 
     def _build_takeaways(self):
-        all_insights = sum(self.insights.values(), [])
-        self.key_takeaways = all_insights[:3]
+        # Prioritize the most significant insights
+        priority_order = [
+            "performance", "physiological", "intensity", 
+            "efficiency", "training_type", "form", 
+            "strength", "context"
+        ]
+        
+        for category in priority_order:
+            if category in self.insights and self.insights[category]:
+                self.key_takeaways.extend(self.insights[category][:2])  # Take max 2 per category
+        
+        # Ensure we have at least 3 takeaways
+        if len(self.key_takeaways) < 3:
+            remaining = sum(len(v) for v in self.insights.values()) - len(self.key_takeaways)
+            if remaining > 0:
+                for category in priority_order:
+                    if category in self.insights:
+                        for insight in self.insights[category]:
+                            if insight not in self.key_takeaways:
+                                self.key_takeaways.append(insight)
+                                if len(self.key_takeaways) >= 3:
+                                    break
+                        if len(self.key_takeaways) >= 3:
+                            break
+        
+        self.key_takeaways = self.key_takeaways[:5]  # Limit to top 5
 
     def _generate_recommendations(self):
-        if self.pace_diff_sec > 20:
-            self.recommendations.append("Include speed intervals to sustain improved pace.")
-        if self.a.get("stride_length_avg") and self.a["stride_length_avg"] < 100:
-            self.recommendations.append("Consider drills to improve stride length for Workout A.")
+        # Based on heart rate
+        if self.b.get("max_hr") and self.b["max_hr"] > 190:
+            self.recommendations.append(
+                "After high-intensity sessions like Workout B, ensure 48 hours recovery "
+                "before another hard effort"
+            )
+        
+        # Based on cadence
+        if self.a.get("cadence_avg") and self.a["cadence_avg"] < 170:
+            self.recommendations.append(
+                "Consider cadence drills to improve running economy for workouts like Workout A"
+            )
+        
+        # Based on workout type
+        a_type = classify_workout(Workout(**self.a))
+        b_type = classify_workout(Workout(**self.b))
+        
+        if "interval" in a_type and "interval" in b_type:
+            self.recommendations.append(
+                "You're doing multiple interval sessions - ensure adequate easy runs "
+                "between for recovery"
+            )
+        
+        # Based on training load
+        if self.comparison_metrics.get("training_load", {}).get("percent_change", 0) > 30:
+            self.recommendations.append(
+                "Significant increase in training load detected - monitor for signs of overtraining"
+            )
 
     def _evaluate_risks(self):
         if self.a.get("avg_hr") and self.a["avg_hr"] > 175:
-            self.risk_flags.append("High average HR in Workout A — monitor recovery.")
+            self.risk_flags.append(
+                "High average HR in Workout A - ensure proper recovery was taken"
+            )
+        
         if self.b.get("avg_hr") and self.b["avg_hr"] > 175:
-            self.risk_flags.append("High average HR in Workout B — risk of overtraining.")
+            self.risk_flags.append(
+                "High average HR in Workout B - this intensity should be limited to 1-2x weekly"
+            )
+        
+        if (self.a.get("running_power_max") and self.b.get("running_power_max") and 
+            abs(self.a["running_power_max"] - self.b["running_power_max"]) > 50):
+            self.risk_flags.append(
+                "Large variation in peak power output - check for consistent effort or possible data issues"
+            )
 
     def _evaluate_trends(self):
         self.performance_trend = {
-            "aerobic_efficiency": "improving" if self.a["avg_hr"] < self.b["avg_hr"] else "declining",
+            "aerobic_efficiency": "improving" if (
+                self.a.get("avg_hr") and self.b.get("avg_hr") and 
+                self.a["avg_hr"] < self.b["avg_hr"] and 
+                pace_in_seconds(self.a.get("pace", "0'0")) <= pace_in_seconds(self.b.get("pace", "0'0"))
+            ) else "declining",
+
             "speed_endurance": "better" if self.pace_diff_sec > 0 else "worse",
-            "cadence": "stable" if abs((self.a.get("cadence_avg") or 0) - (self.b.get("cadence_avg") or 0)) <= 5 else "changing"
+
+            "cadence_consistency": "stable" if abs(
+                (self.a.get("cadence_avg", 0) or 0) - (self.b.get("cadence_avg", 0) or 0)
+            ) <= 5 else "changing",
+
+            "power_output": "higher" if (
+                self.a.get("running_power_avg") and self.b.get("running_power_avg") and 
+                self.a["running_power_avg"] > self.b["running_power_avg"]
+            ) else "lower"
         }
+
 
     def _export(self):
         return {
@@ -259,11 +654,31 @@ class InsightEngine:
             "recommendations": self.recommendations,
             "risk_flags": self.risk_flags,
             "performance_trend": self.performance_trend,
-            "summary": self._generate_summary()
+            "comparison_metrics": self.comparison_metrics,
+            "summary": self._generate_summary(),
+            "workout_types": {
+                "a": classify_workout(Workout(**self.a)),
+                "b": classify_workout(Workout(**self.b))
+            }
         }
 
     def _generate_summary(self):
-        return " ".join(self.key_takeaways) if len(self.key_takeaways) >= 3 else "See categorized insights."
+        if not self.key_takeaways:
+            return "See detailed insights for comparison results"
+        
+        summary = []
+        a_type = classify_workout(Workout(**self.a))
+        b_type = classify_workout(Workout(**self.b))
+        
+        if a_type != b_type:
+            summary.append(f"Comparing {a_type} with {b_type}:")
+        
+        summary.extend(self.key_takeaways[:3])
+        
+        if self.recommendations:
+            summary.append("Recommendations: " + self.recommendations[0])
+        
+        return " ".join(summary)
 
 # ---------- Comparison Logic ----------
 def compare_workouts(a: Workout, b: Workout):
@@ -293,3 +708,7 @@ async def compare(data: CompareRequest):
     result = compare_workouts(data.workout_a, data.workout_b)
     logger.info(f"Comparison result: {result}")
     return {"result": result}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
