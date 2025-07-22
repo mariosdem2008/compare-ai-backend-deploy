@@ -109,23 +109,30 @@ def classify_workout(workout: Workout) -> str:
     duration = time_in_seconds(workout.time) if workout.time else 0
 
     if structure == "intervals":
-        # Further classify interval type
+        # List of split labels that represent running intervals
+        running_labels = {"run", "lap", "interval"}
+
         interval_distances = []
         for split in splits:
-            if split.get("label", "").lower() in ["run", "lap"]:
+            label = split.get("label", "").lower()
+            if label in running_labels:
                 km_str = split.get("km", "0 km")
-                km = float(km_str.split()[0])
-                interval_distances.append(km)
-        
+                try:
+                    km = float(km_str.split()[0])
+                    interval_distances.append(km)
+                except (ValueError, IndexError):
+                    # In case km string is malformed, ignore this split distance
+                    continue
+
         avg_interval_distance = np.mean(interval_distances) if interval_distances else 0
-        
+
         if avg_interval_distance <= 0.5:
             return "short intervals (200-400m)"
         elif avg_interval_distance <= 1.0:
             return "mid-length intervals (800-1000m)"
         else:
             return "long intervals (mile+)"
-    
+
     # Continuous runs
     if distance <= 5 and avg_hr > 180 and pace < 4.0:
         return "5K race or time trial"
