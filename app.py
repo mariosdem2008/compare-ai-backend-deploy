@@ -4,7 +4,10 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import re
 from fastapi.middleware.cors import CORSMiddleware
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -214,6 +217,6 @@ def compare_workouts(a: Workout, b: Workout):
 # ---------- Endpoint ----------
 @app.post("/compare")
 async def compare(data: CompareRequest):
-    return {"result": compare_workouts(data.workout_a, data.workout_b)}
-
-
+    result = compare_workouts(data.workout_a, data.workout_b)
+    logger.info(f"Comparison result: {result}")
+    return {"result": result}
