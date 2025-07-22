@@ -61,14 +61,36 @@ def pace_to_seconds(pace_str: str) -> int:
 
 def classify_session(workout: Workout) -> str:
     pace_sec = pace_to_seconds(workout.pace)
-    if workout.is_quality_session:
-        if workout.distance >= 10 and pace_sec < 300:
-            return "tempo"
-        elif workout.distance < 5:
+    effort = workout.effort_score or 0
+    elevation = workout.elevation_gain or 0
+    hr = workout.avg_hr or 0
+
+    if not workout.is_quality_session:
+        return "easy"
+
+    # Look for intervals: short distance, high intensity, high HR or effort
+    if workout.distance < 6:
+        if hr > 165 or effort > 75 or pace_sec < 300:
             return "interval"
-        else:
-            return "threshold"
-    return "easy"
+
+    # Tempo: moderate to long distance, steady and fast pace
+    if 6 <= workout.distance <= 15 and 270 <= pace_sec <= 320:
+        return "tempo"
+
+    # Threshold: submaximal, moderate to high HR, fast pace
+    if pace_sec < 290 and hr > 160:
+        return "threshold"
+
+    # Hill work: high elevation
+    if elevation > 150:
+        return "hill"
+
+    # Long run
+    if workout.distance >= 16 and effort < 70:
+        return "long"
+
+    return "unclassified"
+
 
 # ---------- Insight Engine ----------
 class InsightEngine:
@@ -102,10 +124,19 @@ class InsightEngine:
         return self._export()
 
     def _environment_context(self):
-        if (self.a.get("temperature") and self.b.get("temperature")) and self.b["temperature"] > self.a["temperature"]:
-            self.insights["context"].append("Workout B was done in hotter conditions — improved pace may suggest stronger thermoregulation.")
-        if self.b.get("humidity", 0) > 75:
-            self.insights["context"].append("Workout B occurred in high humidity — performance may have been impacted.")
+        humidity_b = self.b.get("humidity")
+        temperature_b = self.b.get("temperature")
+        wind_b = self.b.get("wind_speed")
+
+        if humidity_b is not None and humidity_b > 75:
+            self.insights["efficiency"].append("High humidity in Workout B may have impaired performance.")
+
+        if temperature_b is not None and temperature_b > 28:
+            self.insights["efficiency"].append("Elevated temperature in Workout B could lead to higher HR and effort.")
+
+        if wind_b is not None and wind_b > 15:
+            self.insights["efficiency"].append("Strong wind in Workout B may have affected pacing or form.")
+
 
     def _heart_rate(self):
         if self.a["avg_hr"] and self.b["avg_hr"]:
