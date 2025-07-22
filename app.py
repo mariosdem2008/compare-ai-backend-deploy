@@ -217,8 +217,9 @@ class InsightEngine:
             self.insights["form"].append("Stride lengths were consistent.")
 
     def _quality(self):
-        self.insights["training_type"].append(f"Workout A was classified as {classify_session(Workout(**self.a))} session.")
-        self.insights["training_type"].append(f"Workout B was classified as {classify_session(Workout(**self.b))} session.")
+        self.insights["training_type"].append(f"Workout A was classified as {classify_workout(Workout(**self.a))} session.")
+        self.insights["training_type"].append(f"Workout B was classified as {classify_workout(Workout(**self.b))} session.")
+
 
     def _distance(self):
         if self.a["distance"] > self.b["distance"]:
