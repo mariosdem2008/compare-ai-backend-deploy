@@ -21,6 +21,12 @@ app.add_middleware(
 )
 
 # ---------- Data Models ----------
+class Split(BaseModel):
+    label: Optional[str]
+    pace: Optional[str]
+
+
+
 class Workout(BaseModel):
     avg_hr: Optional[int] = None
     max_hr: Optional[int] = None
@@ -47,7 +53,7 @@ class CompareRequest(BaseModel):
     workout_b: Workout
 
 # ---------- Utilities ----------
-def pace_to_seconds(pace_str: str) -> int:
+def pace_in_seconds(pace_str: str) -> int:
     if not pace_str:
         return 0
     try:
@@ -59,38 +65,40 @@ def pace_to_seconds(pace_str: str) -> int:
         pass
     return 0
 
-def classify_session(workout: Workout) -> str:
-    pace_sec = pace_to_seconds(workout.pace)
-    effort = workout.effort_score or 0
-    elevation = workout.elevation_gain or 0
-    hr = workout.avg_hr or 0
+def _pace_in_minutes(pace_str: str) -> float:
+    seconds = pace_in_seconds(pace_str)
+    return seconds / 60 if seconds else 0.0
 
-    if not workout.is_quality_session:
-        return "easy"
 
-    # Look for intervals: short distance, high intensity, high HR or effort
-    if workout.distance < 6:
-        if hr > 165 or effort > 75 or pace_sec < 300:
-            return "interval"
 
-    # Tempo: moderate to long distance, steady and fast pace
-    if 6 <= workout.distance <= 15 and 270 <= pace_sec <= 320:
-        return "tempo"
+def detect_session_type(splits):
+    has_rest = any(
+        split.get("label", "").lower() == "rest" or 
+        _pace_in_minutes(split.get("pace")) > 10
+        for split in splits
+    )
+    if has_rest:
+        return "intervals"
+    else:
+        return "continuous"
 
-    # Threshold: submaximal, moderate to high HR, fast pace
-    if pace_sec < 290 and hr > 160:
-        return "threshold"
 
-    # Hill work: high elevation
-    if elevation > 150:
-        return "hill"
+def classify_workout(workout):
+    splits = getattr(workout, "splits", []) or []
+    avg_hr = workout.avg_hr or 0
+    distance = workout.distance or 0
+    pace = _pace_in_minutes(workout.pace)
+    structure = detect_session_type(splits)
 
-    # Long run
-    if workout.distance >= 16 and effort < 70:
-        return "long"
-
-    return "unclassified"
-
+    if structure == "intervals":
+        return "interval session"
+    if 4.5 <= distance <= 5.5 and avg_hr > 180:
+        return "race effort"
+    if pace < 4.0:
+        return "tempo run"
+    if pace > 5.5 and avg_hr < 140:
+        return "recovery run"
+    return "general aerobic run"
 
 # ---------- Insight Engine ----------
 class InsightEngine:
@@ -259,7 +267,7 @@ class InsightEngine:
 # ---------- Comparison Logic ----------
 def compare_workouts(a: Workout, b: Workout):
     a_dict, b_dict = a.dict(), b.dict()
-    pace_diff = pace_to_seconds(a_dict.get("pace", "0'0")) - pace_to_seconds(b_dict.get("pace", "0'0"))
+    pace_diff = pace_in_seconds(a_dict.get("pace", "0'0")) - pace_in_seconds(b_dict.get("pace", "0'0"))
     engine = InsightEngine(a_dict, b_dict, pace_diff)
     insights = engine.analyze()
 
