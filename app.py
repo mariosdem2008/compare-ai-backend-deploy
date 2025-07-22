@@ -194,15 +194,15 @@ def compare_workouts(a: Workout, b: Workout):
     insights = insight_engine.analyze()
 
     result = {
-        "distance_diff": round((a_dict.get("distance", 0) - b_dict.get("distance", 0)), 2),
-        "avg_hr_diff": (a_dict.get("avg_hr", 0) - b_dict.get("avg_hr", 0)),
-        "max_hr_diff": (a_dict.get("max_hr", 0) - b_dict.get("max_hr", 0)),
-        "cadence_avg_diff": (a_dict.get("cadence_avg", 0) - b_dict.get("cadence_avg", 0)),
-        "cadence_max_diff": (a_dict.get("cadence_max", 0) - b_dict.get("cadence_max", 0)),
-        "elevation_gain_diff": (a_dict.get("elevation_gain", 0) - b_dict.get("elevation_gain", 0)),
-        "effort_score_diff": (a_dict.get("effort_score", 0) - b_dict.get("effort_score", 0)),
-        "running_power_avg_diff": (a_dict.get("running_power_avg", 0) - b_dict.get("running_power_avg", 0)),
-        "stride_length_avg_diff": (a_dict.get("stride_length_avg", 0) - b_dict.get("stride_length_avg", 0)),
+        "distance_diff": round((a_dict.get("distance") or 0) - (b_dict.get("distance") or 0), 2),
+        "avg_hr_diff": (a_dict.get("avg_hr") or 0) - (b_dict.get("avg_hr") or 0),
+        "max_hr_diff": (a_dict.get("max_hr") or 0) - (b_dict.get("max_hr") or 0),
+        "cadence_avg_diff": (a_dict.get("cadence_avg") or 0) - (b_dict.get("cadence_avg") or 0),
+        "cadence_max_diff": (a_dict.get("cadence_max") or 0) - (b_dict.get("cadence_max") or 0),
+        "elevation_gain_diff": (a_dict.get("elevation_gain") or 0) - (b_dict.get("elevation_gain") or 0),
+        "effort_score_diff": (a_dict.get("effort_score") or 0) - (b_dict.get("effort_score") or 0),
+        "running_power_avg_diff": (a_dict.get("running_power_avg") or 0) - (b_dict.get("running_power_avg") or 0),
+        "stride_length_avg_diff": (a_dict.get("stride_length_avg") or 0) - (b_dict.get("stride_length_avg") or 0),
         "pace_diff_seconds_per_km": pace_diff,
         "who_ran_more": "Workout A" if a_dict["distance"] > b_dict["distance"] else ("Workout B" if a_dict["distance"] < b_dict["distance"] else "Equal"),
         **insights
