@@ -75,6 +75,9 @@ class InsightEngine:
             "training_type": [],
         }
         self.key_takeaways = []
+        self.recommendations = []
+        self.risk_flags = []
+        self.performance_trend = {}
 
     def analyze(self):
         self._heart_rate()
@@ -87,6 +90,9 @@ class InsightEngine:
         self._quality()
         self._distance()
         self._build_takeaways()
+        self._generate_recommendations()
+        self._evaluate_risks()
+        self._evaluate_trends()
         return self._export()
 
     def _heart_rate(self):
@@ -177,10 +183,32 @@ class InsightEngine:
         all_insights = sum(self.insights.values(), [])
         self.key_takeaways = all_insights[:3]
 
+    def _generate_recommendations(self):
+        if self.pace_diff_sec > 20:
+            self.recommendations.append("Include speed intervals to sustain improved pace.")
+        if self.a.get("stride_length_avg") and self.a["stride_length_avg"] < 100:
+            self.recommendations.append("Consider drills to improve stride length for Workout A.")
+
+    def _evaluate_risks(self):
+        if self.a.get("avg_hr") and self.a["avg_hr"] > 175:
+            self.risk_flags.append("High average HR in Workout A — monitor recovery.")
+        if self.b.get("avg_hr") and self.b["avg_hr"] > 175:
+            self.risk_flags.append("High average HR in Workout B — risk of overtraining.")
+
+    def _evaluate_trends(self):
+        self.performance_trend = {
+            "aerobic_efficiency": "improving" if self.a["avg_hr"] < self.b["avg_hr"] else "declining",
+            "speed_endurance": "better" if self.pace_diff_sec > 0 else "worse",
+            "cadence": "stable" if abs((self.a.get("cadence_avg") or 0) - (self.b.get("cadence_avg") or 0)) <= 5 else "changing"
+        }
+
     def _export(self):
         return {
             "categorized_insights": self.insights,
             "key_takeaways": self.key_takeaways,
+            "recommendations": self.recommendations,
+            "risk_flags": self.risk_flags,
+            "performance_trend": self.performance_trend,
             "summary": self._generate_summary()
         }
 
