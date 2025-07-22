@@ -1,4 +1,5 @@
-#app.py
+# Updated version of app.py with all requested enhancements
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -13,12 +14,11 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # or specify your frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ---------- Data Models ----------
 class Workout(BaseModel):
@@ -38,28 +38,37 @@ class Workout(BaseModel):
     stride_length_avg: Optional[int] = None
     effort_score: Optional[int] = None
     is_quality_session: Optional[bool] = None
-
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    wind_speed: Optional[float] = None
 
 class CompareRequest(BaseModel):
     workout_a: Workout
     workout_b: Workout
-
 
 # ---------- Utilities ----------
 def pace_to_seconds(pace_str: str) -> int:
     if not pace_str:
         return 0
     try:
-        pace_str = pace_str.replace(':', "'").replace('"', "").strip()
+        pace_str = pace_str.replace(':', "'").replace('"', '').strip()
         match = re.match(r"(\d+)'(\d+)", pace_str)
         if match:
-            minutes = int(match.group(1))
-            seconds = int(match.group(2))
-            return minutes * 60 + seconds
+            return int(match.group(1)) * 60 + int(match.group(2))
     except:
         pass
     return 0
 
+def classify_session(workout: Workout) -> str:
+    pace_sec = pace_to_seconds(workout.pace)
+    if workout.is_quality_session:
+        if workout.distance >= 10 and pace_sec < 300:
+            return "tempo"
+        elif workout.distance < 5:
+            return "interval"
+        else:
+            return "threshold"
+    return "easy"
 
 # ---------- Insight Engine ----------
 class InsightEngine:
@@ -68,11 +77,7 @@ class InsightEngine:
         self.b = b
         self.pace_diff_sec = pace_diff_sec
         self.insights = {
-            "intensity": [],
-            "efficiency": [],
-            "strength": [],
-            "form": [],
-            "training_type": [],
+            "intensity": [], "efficiency": [], "strength": [], "form": [], "training_type": [], "context": []
         }
         self.key_takeaways = []
         self.recommendations = []
@@ -89,11 +94,18 @@ class InsightEngine:
         self._stride()
         self._quality()
         self._distance()
+        self._environment_context()
         self._build_takeaways()
         self._generate_recommendations()
         self._evaluate_risks()
         self._evaluate_trends()
         return self._export()
+
+    def _environment_context(self):
+        if (self.a.get("temperature") and self.b.get("temperature")) and self.b["temperature"] > self.a["temperature"]:
+            self.insights["context"].append("Workout B was done in hotter conditions — improved pace may suggest stronger thermoregulation.")
+        if self.b.get("humidity", 0) > 75:
+            self.insights["context"].append("Workout B occurred in high humidity — performance may have been impacted.")
 
     def _heart_rate(self):
         if self.a["avg_hr"] and self.b["avg_hr"]:
@@ -166,10 +178,8 @@ class InsightEngine:
             self.insights["form"].append("Stride lengths were consistent.")
 
     def _quality(self):
-        if self.a.get("is_quality_session"):
-            self.insights["training_type"].append("Workout A was marked as a quality session — likely targeted and focused.")
-        if self.b.get("is_quality_session"):
-            self.insights["training_type"].append("Workout B was a quality workout — expect elevated performance intent.")
+        self.insights["training_type"].append(f"Workout A was classified as {classify_session(Workout(**self.a))} session.")
+        self.insights["training_type"].append(f"Workout B was classified as {classify_session(Workout(**self.b))} session.")
 
     def _distance(self):
         if self.a["distance"] > self.b["distance"]:
@@ -213,18 +223,16 @@ class InsightEngine:
         }
 
     def _generate_summary(self):
-        return f"{self.key_takeaways[0]} {self.key_takeaways[1]} {self.key_takeaways[2]}" if len(self.key_takeaways) == 3 else "See categorized insights."
-
+        return " ".join(self.key_takeaways) if len(self.key_takeaways) >= 3 else "See categorized insights."
 
 # ---------- Comparison Logic ----------
 def compare_workouts(a: Workout, b: Workout):
     a_dict, b_dict = a.dict(), b.dict()
     pace_diff = pace_to_seconds(a_dict.get("pace", "0'0")) - pace_to_seconds(b_dict.get("pace", "0'0"))
+    engine = InsightEngine(a_dict, b_dict, pace_diff)
+    insights = engine.analyze()
 
-    insight_engine = InsightEngine(a_dict, b_dict, pace_diff)
-    insights = insight_engine.analyze()
-
-    result = {
+    return {
         "distance_diff": round((a_dict.get("distance") or 0) - (b_dict.get("distance") or 0), 2),
         "avg_hr_diff": (a_dict.get("avg_hr") or 0) - (b_dict.get("avg_hr") or 0),
         "max_hr_diff": (a_dict.get("max_hr") or 0) - (b_dict.get("max_hr") or 0),
@@ -238,9 +246,6 @@ def compare_workouts(a: Workout, b: Workout):
         "who_ran_more": "Workout A" if a_dict["distance"] > b_dict["distance"] else ("Workout B" if a_dict["distance"] < b_dict["distance"] else "Equal"),
         **insights
     }
-
-    return result
-
 
 # ---------- Endpoint ----------
 @app.post("/compare")
