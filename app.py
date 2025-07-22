@@ -205,3 +205,5 @@ def compare_workouts(a: Workout, b: Workout):
 @app.post("/compare")
 async def compare(data: CompareRequest):
     return {"result": compare_workouts(data.workout_a, data.workout_b)}
+
+
